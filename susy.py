@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import math
 from typing import List, Tuple, Dict, Optional, Set
 from dataclasses import dataclass
 
@@ -297,6 +298,39 @@ class GraphBuilder:
 
         return self.vertices, self.edges
 
+    def export_legacy_graph(self):
+        """
+        Export the graph in the legacy format:
+            vertex_list : List[int]
+            size        : int
+            edges       : Dict[int, Dict[int, float]]
+        """
+        if self.vertices is None or self.edges is None:
+            raise ValueError("Graph not constructed yet, call build_graph")
+
+        # Vertex list (same semantics as old code)
+        vertex_list = [v.id for v in self.vertices]
+
+        # Edge dictionary: min(u,v) -> {max(u,v): weight}
+        edges = {}
+        size = 0
+
+        for e in self.edges:
+            u = e.vertex1.id
+            v = e.vertex2.id
+            w = e.weight
+
+            i, j = (u, v) if u < v else (v, u)
+
+            if i not in edges:
+                edges[i] = {j: w}
+                size += 1
+            elif j not in edges[i]:
+                edges[i][j] = w
+                size += 1
+            # else: duplicate edge, ignore (same as legacy behavior)
+
+        return vertex_list, size, edges
 
 # Example usage demonstration
 if __name__ == "__main__":
