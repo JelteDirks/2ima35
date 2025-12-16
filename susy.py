@@ -30,8 +30,9 @@ class Edge:
 
     # hash (u,v) and (v,u) the same
     def __hash__(self):
-        return hash((min(self.vertex1.id, self.vertex2.id),
-                    max(self.vertex1.id, self.vertex2.id)))
+        return hash((min(self.vertex1.id,
+                         self.vertex2.id), max(self.vertex1.id,
+                                               self.vertex2.id)))
 
     def __repr__(self):
         return f"Edge({self.vertex1.id} <-> {self.vertex2.id}, weight={self.weight:.4f})"
@@ -51,7 +52,6 @@ class GraphBuilder:
                  filepath: str,
                  feature_columns: Optional[List[str]] = None,
                  use_all_features: bool = True,
-                 standardize: bool = True,
                  max_samples: Optional[int] = None):
         """
         Initialize the graph builder.
@@ -59,13 +59,11 @@ class GraphBuilder:
             filepath: Path to the CSV file
             feature_columns: Specific feature columns to use (if None and use_all_features=False, uses f1-f8)
             use_all_features: If True, uses all feature columns except 'signal'
-            standardize: If True, standardizes features before distance computation
             max_samples: Maximum number of samples to load (None = all samples)
         """
         self.filepath = filepath
         self.feature_columns = feature_columns
         self.use_all_features = use_all_features
-        self.standardize = standardize
         self.max_samples = max_samples
 
         self.df = None
@@ -140,9 +138,7 @@ class GraphBuilder:
         # Create vertex objects
         self.vertices = set()
         for i in range(len(self.df)):
-            vertex = Vertex(id=i,
-                            features=raw_features[i],
-                            label=labels[i])
+            vertex = Vertex(id=i, features=raw_features[i], label=labels[i])
             self.vertices.add(vertex)
 
         print(f"\nCreated {len(self.vertices)} vertices")
@@ -255,8 +251,6 @@ class GraphBuilder:
             len(self.selected_features),
             'feature_names':
             self.selected_features,
-            'standardized':
-            self.standardize,
             'min_edge_weight':
             min(edge_weights) if edge_weights else None,
             'max_edge_weight':
@@ -311,32 +305,22 @@ if __name__ == "__main__":
     print("=" * 70)
 
     print("\n\n### Example 2: Graph with selected features ###")
-    builder2 = GraphBuilder(filepath='~/Downloads/SUSY.csv',
-                            use_all_features=False,
-                            feature_columns=['f1', 'f2'],
-                            standardize=True,
-                            max_samples=500)
-    vertices2, edges2 = builder2.build_graph(complete=True)
-
-    from dataclasses import asdict
-
-    v = next(iter(vertices2))
-    print(asdict(v))
-
-    e = next(iter(edges2))
-    print(asdict(e))
-
+    builder = GraphBuilder(filepath='~/Downloads/SUSY.csv',
+                           use_all_features=False,
+                           feature_columns=['f1', 'f2'],
+                           max_samples=500)
+    vertices, edges = builder.build_graph(complete=True)
 
     # Demonstrate distance computation
     print("\n\n### Distance Computation Examples ###")
-    v_list = list(vertices2)
+    v_list = list(vertices)
     if len(v_list) >= 2:
         v1, v2 = v_list[0], v_list[1]
         print(f"\nDistance between {v1} and {v2}:")
         print(
-            f"  Euclidean: {builder2.compute_distance(v1, v2, 'euclidean'):.4f}"
+            f"  Euclidean: {builder.compute_distance(v1, v2, 'euclidean'):.4f}"
         )
         print(
-            f"  Manhattan: {builder2.compute_distance(v1, v2, 'manhattan'):.4f}"
+            f"  Manhattan: {builder.compute_distance(v1, v2, 'manhattan'):.4f}"
         )
-        print(f"  Cosine: {builder2.compute_distance(v1, v2, 'cosine'):.4f}")
+        print(f"  Cosine: {builder.compute_distance(v1, v2, 'cosine'):.4f}")
