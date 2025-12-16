@@ -2,7 +2,13 @@ import math
 import csv
 import random
 import scipy.spatial
+import matplotlib.pyplot as plt
+import numpy as np
 
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
+from sklearn.decomposition import PCA
+from collections import defaultdict, deque
 from argparse import ArgumentParser
 from datetime import datetime
 from sklearn.datasets import make_circles, make_moons, make_blobs, make_swiss_roll, make_s_curve
@@ -330,6 +336,89 @@ def create_mst(V, E, epsilon, size, vertex_coordinates, plot_intermediate=False,
     return mst
 
 
+
+def connected_components(vertices, edges):
+    adj = defaultdict(list)
+    for u, v, _ in edges:
+        adj[u].append(v)
+        adj[v].append(u)
+
+    visited = set()
+    components = []
+
+    for v in vertices:
+        if v in visited:
+            continue
+        q = deque([v])
+        visited.add(v)
+        comp = {v}
+
+        while q:
+            x = q.popleft()
+            for y in adj[x]:
+                if y not in visited:
+                    visited.add(y)
+                    q.append(y)
+                    comp.add(y)
+
+        components.append(comp)
+
+    return components
+
+
+def plot_clusters(vertices, clusters, use_pca=True):
+    """
+    Plot clusters with colors and ground-truth signal markers.
+    Args:
+        vertices: list of Vertex objects (must have `features` and `label`)
+        clusters: list of sets/lists of vertex IDs
+        use_pca: if True, project features onto the top 2 principal components
+    """
+    # Build feature and label matrices
+    vertex_id_to_idx = {v.id: i for i, v in enumerate(vertices)}
+    X = np.array([v.features for v in vertices])  # shape: (n_vertices, n_features)
+    labels = np.array([v.label for v in vertices])  # shape: (n_vertices,)
+    if use_pca:
+        pca = PCA(n_components=2)
+        X_2d = pca.fit_transform(X)
+        print(f"PCA explained variance ratio: {pca.explained_variance_ratio_}")
+    else:
+        X_2d = X[:, :2]  # just take first two features
+
+    # Map vertex IDs to 2D coordinates
+    vertex_coords = {v.id: X_2d[i] for i, v in enumerate(vertices)}
+
+    # Marker mapping
+    label_markers = {1: 'o', 0: 'x'}
+
+    # Color map for clusters
+    colors = plt.cm.get_cmap('tab10', len(clusters))
+
+    plt.figure(figsize=(8, 6))
+
+    for cluster_idx, cluster in enumerate(clusters):
+        for v_id in cluster:
+            coord = vertex_coords[v_id]
+            label = labels[vertex_id_to_idx[v_id]]
+            plt.scatter(coord[0], coord[1],
+                        color=colors(cluster_idx),
+                        marker=label_markers[label],
+                        s=50,
+                        edgecolor='k',
+                        alpha=0.7)
+
+    # Build legends
+    cluster_patches = [Patch(color=colors(i), label=f'Cluster {i}') for i in range(len(clusters))]
+    label_lines = [Line2D([], [], color='k', marker='o', linestyle='None', label='Signal 1'),
+                    Line2D([], [], color='k', marker='x', linestyle='None', label='Signal 0')]
+    plt.legend(handles=cluster_patches + label_lines, bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    plt.xlabel('Component 1' if use_pca else 'Feature 1')
+    plt.ylabel('Component 2' if use_pca else 'Feature 2')
+    plt.title('MST-Cut Clusters')
+    plt.tight_layout()
+    plt.show()
+
 def main():
     """
     For every dataset, it creates the mst and plots the clustering
@@ -342,7 +431,6 @@ def main():
 
     file_location = 'susy/'
     plotter = Plotter(None, None, file_location)
-    time = []
 
     print('Start generating MST')
 
@@ -353,7 +441,7 @@ def main():
     builder = GraphBuilder(filepath='~/Downloads/SUSY.csv',
                            use_all_features=False,
                            feature_columns=['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'],
-                           max_samples=50)
+                           max_samples=100)
     vertices, edges = builder.build_graph(complete=True)
     V, size, E = builder.export_legacy_graph()
 
@@ -362,13 +450,22 @@ def main():
     timestamp = datetime.now()
 
     mst = create_mst(V, E, epsilon=args.epsilon, size=size, vertex_coordinates=None, plot_intermediate=False)
+    endtime = datetime.now()
+    print(f'Found MST of size {len(mst)} in: {endtime - timestamp}')
+    assert len(mst) == (len(V) - 1)
 
-    print(len(mst), len(V))
-    print('Found MST in: ', datetime.now() - timestamp)
+    mst_sorted = sorted(mst, key=lambda e: e[2], reverse=True)
+    weights = [e[2] for e in mst_sorted]
+    assert all(weights[i] >= weights[i+1] for i in range(len(weights)-1))
+
+    cut_edges = mst_sorted[:1]
+    cut_set = set(cut_edges)
+    mst_remaining = [e for e in mst if e not in cut_set]
+
+    clusters = connected_components(V, mst_remaining)
+    plot_clusters(vertices=vertices, clusters=clusters, use_pca=True)
+
     print('Done...')
-    for t in time:
-        print('Dataset generation took:', t)
-
 
 if __name__ == '__main__':
     # Initial call to main function
