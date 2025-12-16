@@ -170,17 +170,6 @@ class GraphBuilder:
         else:
             raise ValueError(f"Unknown metric: {metric}")
 
-    def get_vertex_signals(self,
-                           upper_limit: Optional[int] = None
-                           ) -> Dict[int, int]:
-        if self.vertices is None:
-            raise ValueError("Vertices not constructed yet")
-
-        if upper_limit is None:
-            return {v.id: v.signal for v in self.vertices}
-
-        return {v.id: v.signal for v in self.vertices if v.id < upper_limit}
-
     def create_edges(self,
                      complete: bool = True,
                      max_edges: Optional[int] = None,
