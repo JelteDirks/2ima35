@@ -199,6 +199,7 @@ def find_mst(U, V, E):
     return mst, remove_edges
 
 
+# Returns all edges that are between U and V
 def get_edges(U, V, E):
     """
     :param U: subset of vertices (u_j)
@@ -239,12 +240,20 @@ def reduce_edges(vertices, E, c, epsilon):
     conf = SparkConf().setAppName('MST_Algorithm')
     sc = SparkContext.getOrCreate(conf=conf)
 
+    print("Default parallelism: ", sc.defaultParallelism)
+
     n = len(vertices)
     k = math.ceil(n ** ((c - epsilon) / 2))
     print("k: ", k)
     U, V = partion_vertices(vertices, k)
 
-    rddUV = sc.parallelize(U).cartesian(sc.parallelize(V)).map(lambda x: get_edges(x[0], x[1], E)).map(
+    # TODO: most important part to change is here
+    # can not take cartesian product because we need to randomize the assignment
+    # of edges to machines
+
+    # creates all the u1, v1, u2, v2, etc and randomizes it (rdd does this automatically)
+    # the edges between them are created by 'get_edges'
+    rddUV = sc.parallelize(U).cartesian(sc.parallelize(V)) .map(lambda x: get_edges(x[0], x[1], E)).map(
         lambda x: (find_mst(x[0], x[1], x[2])))
     both = rddUV.collect()
 
@@ -374,6 +383,7 @@ def main():
         print('Created plot of MST in: ', datetime.now() - timestamp)
         cnt += 1
 
+    return
     # Read form file location
     # loc_array = ['datasets/Brightkite_edges.txt', 'datasets/CA-AstroPh.txt', 'datasets/com-amazon.ungraph.txt',
     # 'datasets/facebook_combined.txt'
