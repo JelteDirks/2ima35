@@ -1,9 +1,7 @@
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler
 from typing import List, Tuple, Dict, Optional, Set
 from dataclasses import dataclass
-import itertools
 
 
 @dataclass
@@ -12,7 +10,6 @@ class Vertex:
     id: int
     features: np.ndarray
     label: float
-    raw_features: np.ndarray
 
     def __hash__(self):
         return hash(self.id)
@@ -140,22 +137,12 @@ class GraphBuilder:
         labels = self.df['signal'].values
         raw_features = self.df[self.selected_features].values
 
-        # Standardize features if requested
-        if self.standardize:
-            self.scaler = StandardScaler()
-            processed_features = self.scaler.fit_transform(raw_features)
-            print("  Features standardized (mean≈0, std≈1)")
-        else:
-            processed_features = raw_features
-            print("  Using raw features (no standardization)")
-
         # Create vertex objects
         self.vertices = set()
         for i in range(len(self.df)):
             vertex = Vertex(id=i,
-                            features=processed_features[i],
-                            label=labels[i],
-                            raw_features=raw_features[i])
+                            features=raw_features[i],
+                            label=labels[i])
             self.vertices.add(vertex)
 
         print(f"\nCreated {len(self.vertices)} vertices")
@@ -335,6 +322,10 @@ if __name__ == "__main__":
 
     v = next(iter(vertices2))
     print(asdict(v))
+
+    e = next(iter(edges2))
+    print(asdict(e))
+
 
     # Demonstrate distance computation
     print("\n\n### Distance Computation Examples ###")
