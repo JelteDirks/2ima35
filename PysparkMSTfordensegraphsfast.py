@@ -353,7 +353,7 @@ def main():
     builder = GraphBuilder(filepath='~/Downloads/SUSY.csv',
                            use_all_features=False,
                            feature_columns=['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'],
-                           max_samples=2000)
+                           max_samples=50)
     vertices, edges = builder.build_graph(complete=True)
     V, size, E = builder.export_legacy_graph()
 
@@ -362,32 +362,6 @@ def main():
     timestamp = datetime.now()
 
     mst = create_mst(V, E, epsilon=args.epsilon, size=size, vertex_coordinates=None, plot_intermediate=False)
-    c = [[121399]]
-
-    cnt = 0
-    dict_edges = dict()
-    for edge in mst:
-        if edge[0] in dict_edges:
-            dict_edges[edge[0]][edge[1]] = edge[2]
-        else:
-            dict_edges[edge[0]] = {edge[1]: edge[2]}
-
-    while len(c[0]) < 1000:
-        number = mst[cnt][0]
-        cnt += 1
-        c = create_clusters([[number]], dict_edges)
-        print(len(c[0]))
-
-    new_mst = []
-    for edge in mst:
-        if edge[0] in c[0]:
-            new_mst.append(edge)
-
-    plotter.plot_without_coordinates(new_mst)
-    # plotter.set_vertex_coordinates(vertex_coordinates)
-    # plotter.set_dataset('rvisp24116')
-    # plotter.update_string()
-    # plotter.plot_mst_2d(mst)
 
     print(len(mst), len(V))
     print('Found MST in: ', datetime.now() - timestamp)
