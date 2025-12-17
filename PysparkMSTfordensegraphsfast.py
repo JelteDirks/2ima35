@@ -200,10 +200,11 @@ def find_mst(U, V, E):
                 E.remove(E[0])
     for edge in E:
         remove_edges.add(edge)
+
     if len(mst) != len(vertices) - 1 or len(connected_component) != len(vertices):
         print('Warning: parition cannot have a full MST! Missing edges to create full MST.')
-        # print('Error: MST found cannot be correct \n Length mst: ', len(mst), '\n Total connected vertices: ',
-        #       len(connected_component), '\n Number of vertices: ', len(vertices))
+        print('Error: MST found cannot be correct \n Length mst: ', len(mst), '\n Total connected vertices: ',
+              len(connected_component), '\n Number of vertices: ', len(vertices))
     return mst, remove_edges
 
 
@@ -237,8 +238,16 @@ def reduce_edges(vertices, E, c, epsilon):
     conf = SparkConf().setAppName('MST_Algorithm_EdgeSampling')
     sc = SparkContext.getOrCreate(conf=conf)
 
+    print("Default parallelism: ", sc.defaultParallelism)
+
     n = len(vertices)
 
+    # TODO: most important part to change is here
+    # can not take cartesian product because we need to randomize the assignment
+    # of edges to machines
+
+    # creates all the u1, v1, u2, v2, etc and randomizes it (rdd does this automatically)
+    # the edges between them are created by 'get_edges'
     # Build edge_list from dict-of-dicts E
     edge_list = []
     for u, vw in E.items():
@@ -433,102 +442,43 @@ def main():
     parser.add_argument('--machines', help='Number of machines [default=1]', type=int, default=1)
     args = parser.parse_args()
 
+    file_location = 'susy/'
+    plotter = Plotter(None, None, file_location)
+
     print('Start generating MST')
-    if args.test:
-        print('Test argument given')
 
     start_time = datetime.now()
     print('Starting time:', start_time)
-
-    datasets = get_clustering_data()
-    names_datasets = ['TwoCircles', 'TwoMoons', 'Varied', 'Aniso', 'Blobs', 'Random', 'swissroll', 'sshape']
-    # datasets = []
-
-    num_clusters = [2, 2, 3, 3, 3, 2, 2, 2]
-    cnt = 0
-    time = []
-    file_location = 'Results/test/'
-    plotter = Plotter(None, None, file_location)
-    data_reader = DataReader()
-    for dataset in datasets:
-        if cnt < 0:
-            cnt += 1
-            continue
-        timestamp = datetime.now()
-        print('Start creating Distance Matrix...')
-        E, size, vertex_coordinates = create_distance_matrix(dataset[0][0])
-        plotter.set_vertex_coordinates(vertex_coordinates)
-        plotter.set_dataset(names_datasets[cnt])
-        plotter.update_string()
-        plotter.reset_round()
-        V = list(range(len(vertex_coordinates)))
-        print('Size dataset: ', len(vertex_coordinates))
-        print('Created distance matrix in: ', datetime.now() - timestamp)
-        print('Start creating MST...')
-        timestamp = datetime.now()
-        mst = create_mst(V, E, epsilon=args.epsilon, size=size, vertex_coordinates=vertex_coordinates,
-                         plot_intermediate=True, plotter=plotter)
-        print('Found MST in: ', datetime.now() - timestamp)
-        time.append(datetime.now() - timestamp)
-        print('Start creating plot of MST...')
-        timestamp = datetime.now()
-        if len(vertex_coordinates[0]) > 2:
-            plotter.plot_mst_3d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
-        else:
-            plotter.plot_mst_2d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
-        print('Created plot of MST in: ', datetime.now() - timestamp)
-        cnt += 1
-
-    # Read form file location
-    # loc_array = ['datasets/Brightkite_edges.txt', 'datasets/CA-AstroPh.txt', 'datasets/com-amazon.ungraph.txt',
-    # 'datasets/facebook_combined.txt'
-    # ]
-    # loc = 'datasets/Brightkite_edges.txt'
-    loc = 'datasets/CA-AstroPh.txt'
-    # loc = 'datasets/facebook_combined.txt'
-    # loc = 'datasets/polygons/rvisp24116.instance.json'
-    print('Read dataset: ', loc)
     timestamp = datetime.now()
-    # V, size, E, vertex_coordinates = data_reader.read_json(loc)
-    V, size, E = data_reader.read_data_set_from_txtfile(loc)
+
+    builder = GraphBuilder(filepath='~/Downloads/SUSY.csv',
+                           use_all_features=False,
+                           feature_columns=['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'],
+                           max_samples=100)
+    vertices, edges = builder.build_graph(complete=True)
+    V, size, E = builder.export_legacy_graph()
+
     print('Time to read dataset: ', datetime.now() - timestamp)
     print('Size dataset: ', size)
     timestamp = datetime.now()
 
     mst = create_mst(V, E, epsilon=args.epsilon, size=size, vertex_coordinates=None, plot_intermediate=False)
-    c = [[121399]]
+    endtime = datetime.now()
+    print(f'Found MST of size {len(mst)} in: {endtime - timestamp}')
+    assert len(mst) == (len(V) - 1)
 
-    cnt = 0
-    dict_edges = dict()
-    for edge in mst:
-        if edge[0] in dict_edges:
-            dict_edges[edge[0]][edge[1]] = edge[2]
-        else:
-            dict_edges[edge[0]] = {edge[1]: edge[2]}
+    mst_sorted = sorted(mst, key=lambda e: e[2], reverse=True)
+    weights = [e[2] for e in mst_sorted]
+    assert all(weights[i] >= weights[i+1] for i in range(len(weights)-1))
 
-    while len(c[0]) < 1000:
-        number = mst[cnt][0]
-        cnt += 1
-        c = create_clusters([[number]], dict_edges)
-        print(len(c[0]))
+    cut_edges = mst_sorted[:1]
+    cut_set = set(cut_edges)
+    mst_remaining = [e for e in mst if e not in cut_set]
 
-    new_mst = []
-    for edge in mst:
-        if edge[0] in c[0]:
-            new_mst.append(edge)
+    clusters = connected_components(V, mst_remaining)
+    plot_clusters(vertices=vertices, clusters=clusters, use_pca=True)
 
-    plotter.plot_without_coordinates(new_mst)
-    # plotter.set_vertex_coordinates(vertex_coordinates)
-    # plotter.set_dataset('rvisp24116')
-    # plotter.update_string()
-    # plotter.plot_mst_2d(mst)
-
-    print(len(mst), len(V))
-    print('Found MST in: ', datetime.now() - timestamp)
     print('Done...')
-    for t in time:
-        print('Dataset generation took:', t)
-
 
 if __name__ == '__main__':
     # Initial call to main function
