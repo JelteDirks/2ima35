@@ -5,6 +5,7 @@ import scipy.spatial
 import matplotlib.pyplot as plt
 import numpy as np
 
+from new_pyspark_impl import reduce_edges as reduce_edges_pyspark
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from sklearn.decomposition import PCA
@@ -307,12 +308,16 @@ def create_mst(V, E, epsilon, size, vertex_coordinates, plot_intermediate=False,
     n = len(V)
     c = math.log(size / n, n)
     print("C", c)
+
+    conf = SparkConf().setAppName('MST_Algorithm')
+    sc = SparkContext.getOrCreate(conf=conf)
+
     total_runs = 0
     while size > np.power(n, 1 + epsilon):
         total_runs += 1
         if plotter is not None:
             plotter.next_round()
-        mst, removed_edges = reduce_edges(V, E, c, epsilon)
+        mst, removed_edges = reduce_edges_pyspark(V, E, c, epsilon, sc)
         if plot_intermediate and plotter is not None:
             if len(vertex_coordinates[0]) > 2:
                 plotter.plot_mst_3d(mst, intermediate=True, plot_cluster=False, plot_num_machines=1)
@@ -323,6 +328,7 @@ def create_mst(V, E, epsilon, size, vertex_coordinates, plot_intermediate=False,
         size = size - len(removed_edges)
         print('New total of edges: ', size)
         c = (c - epsilon) / 2
+    sc.stop()
     # Now the number of edges is reduced and can be moved to a single machine
     V = set(range(n))
     items = E.items()  # returns [(x, {y : 1})]
@@ -366,7 +372,7 @@ def connected_components(vertices, edges):
     return components
 
 
-def plot_clusters(vertices, clusters, use_pca=True):
+def plot_clusters(vertices, clusters, use_pca=False):
     """
     Plot clusters with colors and ground-truth signal markers.
     Args:
@@ -392,7 +398,7 @@ def plot_clusters(vertices, clusters, use_pca=True):
     label_markers = {1: 'o', 0: 'x'}
 
     # Color map for clusters
-    colors = plt.cm.get_cmap('tab10', len(clusters))
+    colors = plt.cm.get_cmap('winter', len(clusters))
 
     plt.figure(figsize=(8, 6))
 
@@ -438,18 +444,34 @@ def main():
     print('Starting time:', start_time)
     timestamp = datetime.now()
 
+    # m = a * n ^(1 + c)
+    # 0 < epsilon <= c <= 1
+
+    n = 5000 # amount of vertices used
+    a = 3 # some constant for setting up maximum edges
+    c = 0.5 # some constant, (1/2 on slides)
+    epsilon = 1/8 # some constant, (1/8 on slides)
+    m = math.ceil(a * n**(1+c))
+
+
     builder = GraphBuilder(filepath='~/Downloads/SUSY.csv',
                            use_all_features=False,
-                           feature_columns=['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'],
-                           max_samples=100)
-    vertices, edges = builder.build_graph(complete=True)
+                           feature_columns=['f1', 'f2'],
+                           max_samples=n)
+    vertices, edges = builder.build_graph(complete=True,
+                                          max_edges=math.ceil(a * n**(1+c)),
+                                          distance_threshold=None,
+                                          metric="euclidean")
     V, size, E = builder.export_legacy_graph()
 
     print('Time to read dataset: ', datetime.now() - timestamp)
     print('Size dataset: ', size)
     timestamp = datetime.now()
 
-    mst = create_mst(V, E, epsilon=args.epsilon, size=size, vertex_coordinates=None, plot_intermediate=False)
+    assert size == m
+
+    mst = create_mst(V, E, epsilon=epsilon, size=size, vertex_coordinates=None, plot_intermediate=False)
+
     endtime = datetime.now()
     print(f'Found MST of size {len(mst)} in: {endtime - timestamp}')
     assert len(mst) == (len(V) - 1)
@@ -458,12 +480,12 @@ def main():
     weights = [e[2] for e in mst_sorted]
     assert all(weights[i] >= weights[i+1] for i in range(len(weights)-1))
 
-    cut_edges = mst_sorted[:1]
+    cut_edges = mst_sorted[:10] # break some heavy edges
     cut_set = set(cut_edges)
     mst_remaining = [e for e in mst if e not in cut_set]
 
     clusters = connected_components(V, mst_remaining)
-    plot_clusters(vertices=vertices, clusters=clusters, use_pca=True)
+    plot_clusters(vertices=vertices, clusters=clusters, use_pca=False)
 
     print('Done...')
 
