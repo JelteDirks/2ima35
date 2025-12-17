@@ -2,7 +2,13 @@ import math
 import csv
 import random
 import scipy.spatial
+import matplotlib.pyplot as plt
+import numpy as np
 
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
+from sklearn.decomposition import PCA
+from collections import defaultdict, deque
 from argparse import ArgumentParser
 from datetime import datetime
 from sklearn.datasets import make_circles, make_moons, make_blobs, make_swiss_roll, make_s_curve
@@ -10,6 +16,8 @@ from pyspark import SparkConf, SparkContext
 
 from Plotter import *
 from DataReader import *
+
+from susy import GraphBuilder
 
 
 def get_clustering_data():
@@ -199,6 +207,7 @@ def find_mst(U, V, E):
     return mst, remove_edges
 
 
+# Returns all edges that are between U and V
 def get_edges(U, V, E):
     """
     :param U: subset of vertices (u_j)
@@ -225,35 +234,46 @@ def get_edges(U, V, E):
 
 
 def reduce_edges(vertices, E, c, epsilon):
-    """
-    Uses PySpark to distribute the computation of the MSTs,
-    Randomly partition the vertices twice in k subsets (U = {u_1, u_2, .., u_k}, V = {v_1, v_2, .., v_k})
-    For every intersection between U_i and V_j, create the subgraph and find the MST in this graph
-    Remove all edges from E that are not part of the MST in the subgraph
-    :param vertices: vertices in the graph
-    :param E: edges of the graph
-    :param c: constant
-    :param epsilon:
-    :return:The reduced number of edges
-    """
-    conf = SparkConf().setAppName('MST_Algorithm')
+    conf = SparkConf().setAppName('MST_Algorithm_EdgeSampling')
     sc = SparkContext.getOrCreate(conf=conf)
 
     n = len(vertices)
-    k = math.ceil(n ** ((c - epsilon) / 2))
-    print("k: ", k)
-    U, V = partion_vertices(vertices, k)
 
-    rddUV = sc.parallelize(U).cartesian(sc.parallelize(V)).map(lambda x: get_edges(x[0], x[1], E)).map(
-        lambda x: (find_mst(x[0], x[1], x[2])))
-    both = rddUV.collect()
+    # Build edge_list from dict-of-dicts E
+    edge_list = []
+    for u, vw in E.items():
+        for v, w in vw.items():
+            edge_list.append((u, v, w))
+    m = len(edge_list)
+
+    y = n ** (1.0 + epsilon)
+    x = max(1, math.ceil(m / y))
+    print(f"|V|={n}, |E|={m}, y={y:.2f}, x={x}")
+
+    def assign_bucket(edge):
+        u, v, w = edge
+        return (hash((u, v)) % x, edge)
+
+    rdd_edges = sc.parallelize(edge_list).map(assign_bucket)
+
+    def run_bucket_mst(bucket):
+        bucket_id, edges_iter = bucket
+        E_sub = list(edges_iter)
+        if not E_sub:
+            return []
+        mst_sub, removed_sub = find_mst(vertices, vertices, E_sub)
+        return [(mst_sub, removed_sub)]
+
+    bucket_results = rdd_edges.groupByKey().flatMap(run_bucket_mst)
+    both = bucket_results.collect()
 
     mst = []
     removed_edges = set()
-    for i in range(len(both)):
-        mst.append(both[i][0])
-        for edge in both[i][1]:
-            removed_edges.add(edge)
+    for mst_sub, removed_sub in both:
+        # mst_sub is a list of (u,v,w); extend the global list
+        mst.extend(mst_sub)
+        for e in removed_sub:
+            removed_edges.add(e)
 
     sc.stop()
     return mst, removed_edges
@@ -295,6 +315,8 @@ def create_mst(V, E, epsilon, size, vertex_coordinates, plot_intermediate=False,
         if plotter is not None:
             plotter.next_round()
         mst, removed_edges = reduce_edges(V, E, c, epsilon)
+        #print("DEBUG: first 5 mst entries:", mst[:5])
+        #print("DEBUG: types:", [type(e) for e in mst[:5]])
         if plot_intermediate and plotter is not None:
             if len(vertex_coordinates[0]) > 2:
                 plotter.plot_mst_3d(mst, intermediate=True, plot_cluster=False, plot_num_machines=1)
@@ -317,6 +339,89 @@ def create_mst(V, E, epsilon, size, vertex_coordinates, plot_intermediate=False,
     print("#####\n\nTotal runs: ", total_runs, "\n\n#####")
     return mst
 
+
+
+def connected_components(vertices, edges):
+    adj = defaultdict(list)
+    for u, v, _ in edges:
+        adj[u].append(v)
+        adj[v].append(u)
+
+    visited = set()
+    components = []
+
+    for v in vertices:
+        if v in visited:
+            continue
+        q = deque([v])
+        visited.add(v)
+        comp = {v}
+
+        while q:
+            x = q.popleft()
+            for y in adj[x]:
+                if y not in visited:
+                    visited.add(y)
+                    q.append(y)
+                    comp.add(y)
+
+        components.append(comp)
+
+    return components
+
+
+def plot_clusters(vertices, clusters, use_pca=True):
+    """
+    Plot clusters with colors and ground-truth signal markers.
+    Args:
+        vertices: list of Vertex objects (must have `features` and `label`)
+        clusters: list of sets/lists of vertex IDs
+        use_pca: if True, project features onto the top 2 principal components
+    """
+    # Build feature and label matrices
+    vertex_id_to_idx = {v.id: i for i, v in enumerate(vertices)}
+    X = np.array([v.features for v in vertices])  # shape: (n_vertices, n_features)
+    labels = np.array([v.label for v in vertices])  # shape: (n_vertices,)
+    if use_pca:
+        pca = PCA(n_components=2)
+        X_2d = pca.fit_transform(X)
+        print(f"PCA explained variance ratio: {pca.explained_variance_ratio_}")
+    else:
+        X_2d = X[:, :2]  # just take first two features
+
+    # Map vertex IDs to 2D coordinates
+    vertex_coords = {v.id: X_2d[i] for i, v in enumerate(vertices)}
+
+    # Marker mapping
+    label_markers = {1: 'o', 0: 'x'}
+
+    # Color map for clusters
+    colors = plt.cm.get_cmap('tab10', len(clusters))
+
+    plt.figure(figsize=(8, 6))
+
+    for cluster_idx, cluster in enumerate(clusters):
+        for v_id in cluster:
+            coord = vertex_coords[v_id]
+            label = labels[vertex_id_to_idx[v_id]]
+            plt.scatter(coord[0], coord[1],
+                        color=colors(cluster_idx),
+                        marker=label_markers[label],
+                        s=50,
+                        edgecolor='k',
+                        alpha=0.7)
+
+    # Build legends
+    cluster_patches = [Patch(color=colors(i), label=f'Cluster {i}') for i in range(len(clusters))]
+    label_lines = [Line2D([], [], color='k', marker='o', linestyle='None', label='Signal 1'),
+                    Line2D([], [], color='k', marker='x', linestyle='None', label='Signal 0')]
+    plt.legend(handles=cluster_patches + label_lines, bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    plt.xlabel('Component 1' if use_pca else 'Feature 1')
+    plt.ylabel('Component 2' if use_pca else 'Feature 2')
+    plt.title('MST-Cut Clusters')
+    plt.tight_layout()
+    plt.show()
 
 def main():
     """
