@@ -212,11 +212,11 @@ def create_mst(V:List[int], E:Dict[int, Dict[int, float]], epsilon:float, vertex
     y = np.power(n, 1 + epsilon)
     x = int(np.ceil(m / y))
     np.random.shuffle(edge_list)
+    print(f"m={m} x={x} y={y}")
 
     edges_rdd = sc.parallelize(edge_list, numSlices=x)
     m = edges_rdd.count()
     while True:
-        print(f"m={m} x={x} y={y}")
         total_runs += 1
         local_results = edges_rdd.mapPartitions(local_mst)
         edges_rdd = local_results.flatMap(lambda mst_edges: mst_edges)
@@ -225,6 +225,7 @@ def create_mst(V:List[int], E:Dict[int, Dict[int, float]], epsilon:float, vertex
         m = edges_rdd.count() 
         y = int(n**(1+epsilon))
         x = math.ceil(m/y)
+        print(f"m={m} x={x} y={y}")
 
         if m <= y:
             break
@@ -240,9 +241,6 @@ def create_mst(V:List[int], E:Dict[int, Dict[int, float]], epsilon:float, vertex
                 plotter.plot_mst_3d(mst, intermediate=True, plot_cluster=False, plot_num_machines=1)
             else:
                 plotter.plot_mst_2d(mst, intermediate=True, plot_cluster=False, plot_num_machines=1)
-
-
-    print(f"m={m} x={x} y={y}")
 
     mst_vertices = set(edges_rdd
                     .flatMap(lambda edge: [edge[0], edge[1]])
@@ -270,8 +268,8 @@ def main():
     n = 200
     epsilon = 1/8
     c = 1/2
-    m = int(a * n**(1+c))
-    m = int(n * (n-1) / 2)
+    m = int(a * n**(1+c)) # semi-dense graph
+    m = int(n * (n-1) / 2) # complete graph
 
     print('Start generating MST')
     if args.test:
