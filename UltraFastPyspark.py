@@ -111,146 +111,155 @@ def get_key(item):
     return item[2]
 
 
-def find_mst(U, V, E):
-    """
-    finds the mst of graph G = (U union V, E)
-    :param U: vertices U
-    :param V: vertices V
-    :param E: edges of the graph
-    :return: the mst and edges not in the mst of the graph
-     """
-    vertices = set()
-    for v in V:
-        vertices.add(v)
-    for u in U:
-        vertices.add(u)
-    E = sorted(E, key=get_key)
-    connected_component = set()
-    mst = []
-    remove_edges = set()
-    while len(mst) < len(vertices) - 1 and len(connected_component) < len(vertices):
-        if len(E) == 0:
-            break
-        change = False
-        i = 0
-        while i < len(E):
-            if len(connected_component) == 0:
-                connected_component.add(E[i][0])
-                connected_component.add(E[i][1])
-                mst.append(E[i])
-                change = True
-                E.remove(E[i])
-                break
-            else:
-                if E[i][0] in connected_component:
-                    if E[i][1] in connected_component:
-                        remove_edges.add(E[i])
-                        E.remove(E[i])
-                    else:
-                        connected_component.add(E[i][1])
-                        mst.append(E[i])
-                        E.remove(E[i])
-                        change = True
-                        break
-                elif E[i][1] in connected_component:
-                    if E[i][0] in connected_component:
-                        remove_edges.add(E[i])
-                        E.remove(E[i])
-                    else:
-                        connected_component.add(E[i][0])
-                        mst.append(E[i])
-                        E.remove(E[i])
-                        change = True
-                        break
-                else:
-                    i += 1
-        if not change:
-            if len(E) != 0:
-                connected_component.add(E[0][0])
-                connected_component.add(E[0][1])
-                mst.append(E[0])
-                E.remove(E[0])
-    for edge in E:
-        remove_edges.add(edge)
-
-    return mst, remove_edges
-
-
-def local_mst(edges_iter):
+def local_mst_with_union_find(edges_iter):
     edges = list(edges_iter)
-
     if not edges:
         return iter([])
+    # Sort edges by weight (Kruskal's algorithm requirement)
+    edges.sort(key=lambda e: e[2])
+    # Union-Find data structure
+    parent = {}  # parent[v] = parent of vertex v
+    rank = {}    # rank[v] = approximate depth of tree rooted at v
 
-    vertices = set()
-    for u, v, _ in edges:
-        vertices.add(u)
-        vertices.add(v)
+    def find(v):
+        """
+        Find the root of the set containing v.
+        Uses path compression: makes all nodes point directly to root.
+        """
+        if v not in parent:
+            parent[v] = v
+            rank[v] = 0
+        if parent[v] != v:
+            parent[v] = find(parent[v])  # Path compression
+        return parent[v]
 
-    mst, _ = find_mst(vertices, vertices, edges)
+    def union(u, v):
+        """
+        Merge the sets containing u and v.
+        Uses union by rank: attach smaller tree under larger tree.
+        Returns True if sets were different (edge added to MST).
+        """
+        root_u = find(u)
+        root_v = find(v)
+        if root_u == root_v:
+            return False  # Already in same set, would create cycle
+        # Union by rank: attach smaller tree under larger
+        if rank[root_u] < rank[root_v]:
+            parent[root_u] = root_v
+        elif rank[root_u] > rank[root_v]:
+            parent[root_v] = root_u
+        else:
+            parent[root_v] = root_u
+            rank[root_u] += 1
+        return True
+    mst = []
+    for edge in edges:
+        u, v, w = edge
+        if union(u, v):
+            mst.append(edge)
+    return iter(mst)
 
-    return iter([mst])
 
-def create_mst(V:List[int], E:Dict[int, Dict[int, float]], epsilon:float, vertex_coordinates, sc:SparkContext, plot_intermediate=False, plotter=None):
-    """
-    Creates the mst of the graph G = (V, E).
-    As long as the number of edges is greater than n ^(1 + epsilon), the number of edges is reduced
-    Then the edges that needs to be removed are removed from E and the size is updated.
-    :param plotter: class to plot graphs
-    :param V: Vertices
-    :param E: edges
-    :param epsilon:
-    :param plot_intermediate: boolean to indicate if intermediate steps should be plotted
-    :param vertex_coordinates: coordinates of vertices
-    :return: returns the reduced graph with at most np.power(n, 1 + epsilon) edges
-    """
-    print("Creating MST")
+def create_mst(V: List[int], E: Dict[int, Dict[int, float]], epsilon: float, 
+               vertex_coordinates, sc: SparkContext, plot_intermediate=False, plotter=None):
+    print("Creating MST (Optimized)")
     n = len(V)
     total_runs = 0
+
+    # Convert adjacency dict to edge list
     edge_list = [(i, j, w) for i, edgeDict in E.items() for j, w in edgeDict.items()]
     m = len(edge_list)
     y = np.power(n, 1 + epsilon)
     x = int(np.ceil(m / y))
     np.random.shuffle(edge_list)
-    print(f"m={m} x={x} y={y}")
+    print(f"Initial: m={m} x={x} y={y} n={n}")
 
+    # Parallelize edges across x partitions
     edges_rdd = sc.parallelize(edge_list, numSlices=x)
-    m = edges_rdd.count()
+
     while True:
         total_runs += 1
-        local_results = edges_rdd.mapPartitions(local_mst)
-        edges_rdd = local_results.flatMap(lambda mst_edges: mst_edges)
 
-        n = edges_rdd.flatMap(lambda edge: [edge[0], edge[1]]).distinct().count()
-        m = edges_rdd.count() 
-        y = int(n**(1+epsilon))
-        x = math.ceil(m/y)
-        print(f"m={m} x={x} y={y}")
+        # Each partition computes its local MST using Union-Find
+        edges_rdd = edges_rdd.mapPartitions(local_mst_with_union_find)
 
+        # Cache since we'll aggregate over this RDD
+        edges_rdd.cache()
+
+        # OPTIMIZATION: Single-pass aggregation
+        # Collects both edge count (m) and unique vertices (n) in one pass
+        # Avoids expensive distinct() shuffle operation
+        def seq_op(acc, edge):
+            """Sequential operation: process one edge within a partition"""
+            edge_count, vertices = acc
+            return (edge_count + 1, vertices | {edge[0], edge[1]})
+
+        def comb_op(acc1, acc2):
+            """Combiner operation: merge results from different partitions"""
+            return (acc1[0] + acc2[0], acc1[1] | acc2[1])
+
+        # Single action to get both metrics
+        m, vertex_set = edges_rdd.aggregate(
+            (0, set()),  # Initial value: (count=0, empty set)
+            seq_op,      # Process edges in each partition
+            comb_op      # Combine partition results
+        )
+
+        n = len(vertex_set)
+        y = int(n ** (1 + epsilon))
+        x = math.ceil(m / y)
+        print(f"Iteration {total_runs}: m={m} n={n} x={x} y={y}")
+
+        # Convergence check: stop when m ≤ n^(1+ε)
         if m <= y:
             break
 
-        edges_rdd = edges_rdd.coalesce(numPartitions=x,shuffle=True)
+        # Repartition for next iteration
+        # coalesce with shuffle=True allows increasing partitions
+        edges_rdd = edges_rdd.coalesce(numPartitions=x, shuffle=True)
+        edges_rdd.cache()
 
-        continue #skip plotting for now
-        if plotter is not None:
-            plotter.next_round()
-
-        if plot_intermediate and plotter is not None:
-            if len(vertex_coordinates[0]) > 2:
-                plotter.plot_mst_3d(mst, intermediate=True, plot_cluster=False, plot_num_machines=1)
-            else:
-                plotter.plot_mst_2d(mst, intermediate=True, plot_cluster=False, plot_num_machines=1)
-
-    mst_vertices = set(edges_rdd
-                    .flatMap(lambda edge: [edge[0], edge[1]])
-                    .distinct()
-                    .collect())
+    # Collect final edges (small enough now for sequential processing)
     mst_edges = edges_rdd.collect()
+    edges_rdd.unpersist()  # Clean up cached RDD
 
-    mst, _ = find_mst(mst_vertices, mst_vertices, mst_edges)
+    # Final MST computation on reduced graph (sequential)
+    # Use Union-Find directly for efficiency
+    mst_edges.sort(key=lambda e: e[2])
 
-    print(f"Total runs: {total_runs}")
+    parent = {}
+    rank = {}
+
+    def find(v):
+        if v not in parent:
+            parent[v] = v
+            rank[v] = 0
+        if parent[v] != v:
+            parent[v] = find(parent[v])
+        return parent[v]
+
+    def union(u, v):
+        root_u = find(u)
+        root_v = find(v)
+        if root_u == root_v:
+            return False
+        if rank[root_u] < rank[root_v]:
+            parent[root_u] = root_v
+        elif rank[root_u] > rank[root_v]:
+            parent[root_v] = root_u
+        else:
+            parent[root_v] = root_u
+            rank[root_u] += 1
+        return True
+
+    mst = []
+    for edge in mst_edges:
+        u, v, _ = edge
+        if union(u, v):
+            mst.append(edge)
+
+    print(f"Total iterations: {total_runs}")
+    print(f"Final MST has {len(mst)} edges spanning {len(vertex_set)} vertices")
     return mst
 
 
@@ -265,7 +274,7 @@ def main():
     args = parser.parse_args()
 
     a = 1
-    n = 200
+    n = 2000
     epsilon = 1/8
     c = 1/2
     m = int(a * n**(1+c)) # semi-dense graph
@@ -280,19 +289,18 @@ def main():
 
     datasets = get_clustering_data(n_samples=n)
     names_datasets = ['TwoCircles', 'TwoMoons', 'Varied', 'Aniso', 'Blobs', 'Random', 'swissroll', 'sshape']
-    # datasets = []
 
     conf = SparkConf().setAppName('MST_EDGE_SAMPLING')
-    conf = conf.setMaster("local[4]") # [number] is the amount of cores
+    conf = conf.setMaster("local[12]") # [number] is the amount of cores
     sc = SparkContext.getOrCreate(conf=conf)
 
     num_clusters = [2, 2, 3, 3, 3, 2, 2, 2]
     cnt = 0
     time = []
-    #file_location = 'Results/test/'
     file_location = 'new_results/'
     plotter = Plotter(None, None, file_location)
     data_reader = DataReader()
+
     for dataset in datasets:
         if cnt >= 3:
             break
@@ -318,6 +326,7 @@ def main():
         print('Found MST in: ', endtime - timestamp)
         time.append(datetime.now() - timestamp)
         timestamp = datetime.now()
+
         if len(vertex_coordinates[0]) > 2:
             plotter.plot_mst_3d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
         else:
