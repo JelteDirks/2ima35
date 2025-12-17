@@ -131,4 +131,5 @@ dmypy.json
 Datasets/
 Results/test
 Results_buckets/
-Results_w_noise/
+Results_w_noise/.DS_Store
+new_results/
