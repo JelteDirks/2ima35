@@ -12,12 +12,11 @@ from Plotter import *
 from DataReader import *
 
 
-def get_clustering_data():
+def get_clustering_data(n_samples=100):
     """
     Retrieves all toy datasets from sklearn
     :return: circles, moons, blobs datasets.
     """
-    n_samples = 1500
     noisy_circles = make_circles(n_samples=n_samples, factor=.5,
                                  noise=0.05)
     noisy_moons = make_moons(n_samples=n_samples, noise=0.05)
@@ -194,8 +193,8 @@ def find_mst(U, V, E):
         remove_edges.add(edge)
     if len(mst) != len(vertices) - 1 or len(connected_component) != len(vertices):
         print('Warning: parition cannot have a full MST! Missing edges to create full MST.')
-        # print('Error: MST found cannot be correct \n Length mst: ', len(mst), '\n Total connected vertices: ',
-        #       len(connected_component), '\n Number of vertices: ', len(vertices))
+        print('Error: MST found cannot be correct \n Length mst: ', len(mst), '\n Total connected vertices: ',
+              len(connected_component), '\n Number of vertices: ', len(vertices))
     return mst, remove_edges
 
 
@@ -251,7 +250,8 @@ def reduce_edges(vertices, E, c, epsilon):
 
     def assign_bucket(edge):
         u, v, w = edge
-        return (hash((u, v)) % x, edge)
+        (i, j) = (u, v) if u < v else (v, u)
+        return (hash((i, j)) % x, edge)
 
     rdd_edges = sc.parallelize(edge_list).map(assign_bucket)
 
@@ -259,9 +259,9 @@ def reduce_edges(vertices, E, c, epsilon):
         bucket_id, edges_iter = bucket
         E_sub = list(edges_iter)
         if not E_sub:
-            return []
+            return iter([])
         mst_sub, removed_sub = find_mst(vertices, vertices, E_sub)
-        return [(mst_sub, removed_sub)]
+        return iter([(mst_sub, removed_sub)])
 
     bucket_results = rdd_edges.groupByKey().flatMap(run_bucket_mst)
     both = bucket_results.collect()
@@ -354,18 +354,21 @@ def main():
     start_time = datetime.now()
     print('Starting time:', start_time)
 
-    datasets = get_clustering_data()
+    datasets = get_clustering_data(n_samples=300)
     names_datasets = ['TwoCircles', 'TwoMoons', 'Varied', 'Aniso', 'Blobs', 'Random', 'swissroll', 'sshape']
     # datasets = []
 
     num_clusters = [2, 2, 3, 3, 3, 2, 2, 2]
     cnt = 0
     time = []
-    file_location = 'Results/test/'
+    #file_location = 'Results/test/'
+    file_location = 'new_results/'
     plotter = Plotter(None, None, file_location)
     data_reader = DataReader()
     for dataset in datasets:
-        if cnt < 0:
+        if cnt >= 3:
+            break
+        if cnt <= 0:
             cnt += 1
             continue
         timestamp = datetime.now()
@@ -393,6 +396,7 @@ def main():
         print('Created plot of MST in: ', datetime.now() - timestamp)
         cnt += 1
 
+    return
     # Read form file location
     # loc_array = ['datasets/Brightkite_edges.txt', 'datasets/CA-AstroPh.txt', 'datasets/com-amazon.ungraph.txt',
     # 'datasets/facebook_combined.txt'
