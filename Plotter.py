@@ -216,29 +216,15 @@ class Plotter:
             c.append('k')
 
         if intermediate:
-            if plot_num_machines > 0:
-                cnt = 0
-                for m in mst:
-                    plt.scatter(x, y, c=c, s=area)
-
-                    for i in range(len(m)):
-                        linex = [float(x[int(m[i][0])]), float(x[int(m[i][1])])]
-                        liney = [float(y[int(m[i][0])]), float(y[int(m[i][1])])]
-                        plt.plot(linex, liney, self.colors[cnt])
-
-                    cnt = (cnt + 1) % len(self.colors)
-                    filename = self.file_loc + self.machine_string + '{}'.format(cnt)
-                    plt.savefig(filename, dpi='figure')
-                    plt.clf()
-                    if cnt >= plot_num_machines:
-                        break
 
             cnt = 0
+            plt.scatter(x, y, c=c, s=area)
             for m in mst:
-                for i in range(len(m)):
-                    linex = [float(x[int(m[i][0])]), float(x[int(m[i][1])])]
-                    liney = [float(y[int(m[i][0])]), float(y[int(m[i][1])])]
-                    plt.plot(linex, liney, self.colors[cnt])
+                u = int(m[0])
+                v = int(m[1])
+                linex = [x[u], x[v]]
+                liney = [y[u], y[v]]
+                plt.plot(linex, liney, self.colors[cnt])
                 cnt = (cnt + 1) % len(self.colors)
             filename = self.file_loc + self.machine_string + 'all'
             plt.savefig(filename, dpi='figure')

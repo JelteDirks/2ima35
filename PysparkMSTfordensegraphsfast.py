@@ -2,13 +2,7 @@ import math
 import csv
 import random
 import scipy.spatial
-import matplotlib.pyplot as plt
-import numpy as np
 
-from matplotlib.patches import Patch
-from matplotlib.lines import Line2D
-from sklearn.decomposition import PCA
-from collections import defaultdict, deque
 from argparse import ArgumentParser
 from datetime import datetime
 from sklearn.datasets import make_circles, make_moons, make_blobs, make_swiss_roll, make_s_curve
@@ -16,8 +10,6 @@ from pyspark import SparkConf, SparkContext
 
 from Plotter import *
 from DataReader import *
-
-from susy import GraphBuilder
 
 
 def get_clustering_data():
@@ -200,15 +192,13 @@ def find_mst(U, V, E):
                 E.remove(E[0])
     for edge in E:
         remove_edges.add(edge)
-
     if len(mst) != len(vertices) - 1 or len(connected_component) != len(vertices):
         print('Warning: parition cannot have a full MST! Missing edges to create full MST.')
-        print('Error: MST found cannot be correct \n Length mst: ', len(mst), '\n Total connected vertices: ',
-              len(connected_component), '\n Number of vertices: ', len(vertices))
+        # print('Error: MST found cannot be correct \n Length mst: ', len(mst), '\n Total connected vertices: ',
+        #       len(connected_component), '\n Number of vertices: ', len(vertices))
     return mst, remove_edges
 
 
-# Returns all edges that are between U and V
 def get_edges(U, V, E):
     """
     :param U: subset of vertices (u_j)
@@ -235,26 +225,12 @@ def get_edges(U, V, E):
 
 
 def reduce_edges(vertices, E, c, epsilon):
-    """
-    Uses PySpark to distribute the computation of the MSTs,
-    Randomly partition the vertices twice in k subsets (U = {u_1, u_2, .., u_k}, V = {v_1, v_2, .., v_k})
-    For every intersection between U_i and V_j, create the subgraph and find the MST in this graph
-    Remove all edges from E that are not part of the MST in the subgraph
-    :param vertices: vertices in the graph
-    :param E: edges of the graph
-    :param c: constant
-    :param epsilon:
-    :return:The reduced number of edges
-    """
-    conf = SparkConf().setAppName('MST_Algorithm')
+    conf = SparkConf().setAppName('MST_Algorithm_EdgeSampling')
     sc = SparkContext.getOrCreate(conf=conf)
 
     print("Default parallelism: ", sc.defaultParallelism)
 
     n = len(vertices)
-    k = math.ceil(n ** ((c - epsilon) / 2))
-    print("k: ", k)
-    U, V = partion_vertices(vertices, k)
 
     # TODO: most important part to change is here
     # can not take cartesian product because we need to randomize the assignment
@@ -262,16 +238,41 @@ def reduce_edges(vertices, E, c, epsilon):
 
     # creates all the u1, v1, u2, v2, etc and randomizes it (rdd does this automatically)
     # the edges between them are created by 'get_edges'
-    rddUV = sc.parallelize(U).cartesian(sc.parallelize(V)) .map(lambda x: get_edges(x[0], x[1], E)).map(
-        lambda x: (find_mst(x[0], x[1], x[2])))
-    both = rddUV.collect()
+    # Build edge_list from dict-of-dicts E
+    edge_list = []
+    for u, vw in E.items():
+        for v, w in vw.items():
+            edge_list.append((u, v, w))
+    m = len(edge_list)
+
+    y = n ** (1.0 + epsilon)
+    x = max(1, math.ceil(m / y))
+    print(f"|V|={n}, |E|={m}, y={y:.2f}, x={x}")
+
+    def assign_bucket(edge):
+        u, v, w = edge
+        return (hash((u, v)) % x, edge)
+
+    rdd_edges = sc.parallelize(edge_list).map(assign_bucket)
+
+    def run_bucket_mst(bucket):
+        bucket_id, edges_iter = bucket
+        E_sub = list(edges_iter)
+        if not E_sub:
+            return []
+        mst_sub, removed_sub = find_mst(vertices, vertices, E_sub)
+        return [(mst_sub, removed_sub)]
+
+    bucket_results = rdd_edges.groupByKey().flatMap(run_bucket_mst)
+    both = bucket_results.collect()
 
     mst = []
     removed_edges = set()
-    for i in range(len(both)):
-        mst.append(both[i][0])
-        for edge in both[i][1]:
-            removed_edges.add(edge)
+    for mst_sub, removed_sub in both:
+        # mst_sub is a list of (u,v,w); extend the global list
+        mst.extend(mst_sub)
+        for e in removed_sub:
+            removed_edges.add(e)
 
     sc.stop()
     return mst, removed_edges
@@ -336,89 +337,6 @@ def create_mst(V, E, epsilon, size, vertex_coordinates, plot_intermediate=False,
     return mst
 
 
-
-def connected_components(vertices, edges):
-    adj = defaultdict(list)
-    for u, v, _ in edges:
-        adj[u].append(v)
-        adj[v].append(u)
-
-    visited = set()
-    components = []
-
-    for v in vertices:
-        if v in visited:
-            continue
-        q = deque([v])
-        visited.add(v)
-        comp = {v}
-
-        while q:
-            x = q.popleft()
-            for y in adj[x]:
-                if y not in visited:
-                    visited.add(y)
-                    q.append(y)
-                    comp.add(y)
-
-        components.append(comp)
-
-    return components
-
-
-def plot_clusters(vertices, clusters, use_pca=True):
-    """
-    Plot clusters with colors and ground-truth signal markers.
-    Args:
-        vertices: list of Vertex objects (must have `features` and `label`)
-        clusters: list of sets/lists of vertex IDs
-        use_pca: if True, project features onto the top 2 principal components
-    """
-    # Build feature and label matrices
-    vertex_id_to_idx = {v.id: i for i, v in enumerate(vertices)}
-    X = np.array([v.features for v in vertices])  # shape: (n_vertices, n_features)
-    labels = np.array([v.label for v in vertices])  # shape: (n_vertices,)
-    if use_pca:
-        pca = PCA(n_components=2)
-        X_2d = pca.fit_transform(X)
-        print(f"PCA explained variance ratio: {pca.explained_variance_ratio_}")
-    else:
-        X_2d = X[:, :2]  # just take first two features
-
-    # Map vertex IDs to 2D coordinates
-    vertex_coords = {v.id: X_2d[i] for i, v in enumerate(vertices)}
-
-    # Marker mapping
-    label_markers = {1: 'o', 0: 'x'}
-
-    # Color map for clusters
-    colors = plt.cm.get_cmap('tab10', len(clusters))
-
-    plt.figure(figsize=(8, 6))
-
-    for cluster_idx, cluster in enumerate(clusters):
-        for v_id in cluster:
-            coord = vertex_coords[v_id]
-            label = labels[vertex_id_to_idx[v_id]]
-            plt.scatter(coord[0], coord[1],
-                        color=colors(cluster_idx),
-                        marker=label_markers[label],
-                        s=50,
-                        edgecolor='k',
-                        alpha=0.7)
-
-    # Build legends
-    cluster_patches = [Patch(color=colors(i), label=f'Cluster {i}') for i in range(len(clusters))]
-    label_lines = [Line2D([], [], color='k', marker='o', linestyle='None', label='Signal 1'),
-                    Line2D([], [], color='k', marker='x', linestyle='None', label='Signal 0')]
-    plt.legend(handles=cluster_patches + label_lines, bbox_to_anchor=(1.05, 1), loc='upper left')
-
-    plt.xlabel('Component 1' if use_pca else 'Feature 1')
-    plt.ylabel('Component 2' if use_pca else 'Feature 2')
-    plt.title('MST-Cut Clusters')
-    plt.tight_layout()
-    plt.show()
-
 def main():
     """
     For every dataset, it creates the mst and plots the clustering
@@ -429,45 +347,103 @@ def main():
     parser.add_argument('--machines', help='Number of machines [default=1]', type=int, default=1)
     args = parser.parse_args()
 
-    file_location = 'susy/'
-    plotter = Plotter(None, None, file_location)
-
     print('Start generating MST')
+    if args.test:
+        print('Test argument given')
 
     start_time = datetime.now()
     print('Starting time:', start_time)
+
+    datasets = get_clustering_data()
+    names_datasets = ['TwoCircles', 'TwoMoons', 'Varied', 'Aniso', 'Blobs', 'Random', 'swissroll', 'sshape']
+    # datasets = []
+
+    num_clusters = [2, 2, 3, 3, 3, 2, 2, 2]
+    cnt = 0
+    time = []
+    file_location = 'Results/test/'
+    plotter = Plotter(None, None, file_location)
+    data_reader = DataReader()
+    for dataset in datasets:
+        if cnt < 0:
+            cnt += 1
+            continue
+        timestamp = datetime.now()
+        print('Start creating Distance Matrix...')
+        E, size, vertex_coordinates = create_distance_matrix(dataset[0][0])
+        plotter.set_vertex_coordinates(vertex_coordinates)
+        plotter.set_dataset(names_datasets[cnt])
+        plotter.update_string()
+        plotter.reset_round()
+        V = list(range(len(vertex_coordinates)))
+        print('Size dataset: ', len(vertex_coordinates))
+        print('Created distance matrix in: ', datetime.now() - timestamp)
+        print('Start creating MST...')
+        timestamp = datetime.now()
+        mst = create_mst(V, E, epsilon=args.epsilon, size=size, vertex_coordinates=vertex_coordinates,
+                         plot_intermediate=True, plotter=plotter)
+        print('Found MST in: ', datetime.now() - timestamp)
+        time.append(datetime.now() - timestamp)
+        print('Start creating plot of MST...')
+        timestamp = datetime.now()
+        if len(vertex_coordinates[0]) > 2:
+            plotter.plot_mst_3d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
+        else:
+            plotter.plot_mst_2d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
+        print('Created plot of MST in: ', datetime.now() - timestamp)
+        cnt += 1
+
+    # Read form file location
+    # loc_array = ['datasets/Brightkite_edges.txt', 'datasets/CA-AstroPh.txt', 'datasets/com-amazon.ungraph.txt',
+    # 'datasets/facebook_combined.txt'
+    # ]
+    # loc = 'datasets/Brightkite_edges.txt'
+    loc = 'datasets/CA-AstroPh.txt'
+    # loc = 'datasets/facebook_combined.txt'
+    # loc = 'datasets/polygons/rvisp24116.instance.json'
+    print('Read dataset: ', loc)
     timestamp = datetime.now()
-
-    builder = GraphBuilder(filepath='~/Downloads/SUSY.csv',
-                           use_all_features=False,
-                           feature_columns=['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'],
-                           max_samples=100)
-    vertices, edges = builder.build_graph(complete=True)
-    V, size, E = builder.export_legacy_graph()
-
+    # V, size, E, vertex_coordinates = data_reader.read_json(loc)
+    V, size, E = data_reader.read_data_set_from_txtfile(loc)
     print('Time to read dataset: ', datetime.now() - timestamp)
     print('Size dataset: ', size)
     timestamp = datetime.now()
 
     mst = create_mst(V, E, epsilon=args.epsilon, size=size, vertex_coordinates=None, plot_intermediate=False)
-    endtime = datetime.now()
-    print(f'Found MST of size {len(mst)} in: {endtime - timestamp}')
-    assert len(mst) == (len(V) - 1)
+    c = [[121399]]
 
-    mst_sorted = sorted(mst, key=lambda e: e[2], reverse=True)
-    weights = [e[2] for e in mst_sorted]
-    assert all(weights[i] >= weights[i+1] for i in range(len(weights)-1))
+    cnt = 0
+    dict_edges = dict()
+    for edge in mst:
+        if edge[0] in dict_edges:
+            dict_edges[edge[0]][edge[1]] = edge[2]
+        else:
+            dict_edges[edge[0]] = {edge[1]: edge[2]}
 
-    cut_edges = mst_sorted[:1]
-    cut_set = set(cut_edges)
-    mst_remaining = [e for e in mst if e not in cut_set]
+    while len(c[0]) < 1000:
+        number = mst[cnt][0]
+        cnt += 1
+        c = create_clusters([[number]], dict_edges)
+        print(len(c[0]))
 
-    clusters = connected_components(V, mst_remaining)
-    plot_clusters(vertices=vertices, clusters=clusters, use_pca=True)
+    new_mst = []
+    for edge in mst:
+        if edge[0] in c[0]:
+            new_mst.append(edge)
 
+    plotter.plot_without_coordinates(new_mst)
+    # plotter.set_vertex_coordinates(vertex_coordinates)
+    # plotter.set_dataset('rvisp24116')
+    # plotter.update_string()
+    # plotter.plot_mst_2d(mst)
+
+    print(len(mst), len(V))
+    print('Found MST in: ', datetime.now() - timestamp)
     print('Done...')
+    for t in time:
+        print('Dataset generation took:', t)
+
 
 if __name__ == '__main__':
     # Initial call to main function
     main()
-
