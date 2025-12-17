@@ -1,6 +1,7 @@
 import math
 import csv
 import random
+from typing import Dict, List
 import pyspark
 import scipy.spatial
 import sys
@@ -175,65 +176,22 @@ def find_mst(U, V, E):
     return mst, remove_edges
 
 
-def reduce_edges(vertices, E, epsilon):
+def local_mst(edges_iter):
+    edges = list(edges_iter)
 
-    n = len(vertices)
-    edge_list = [(i, j, w) for i, edgeDict in E.items() for j, w in edgeDict.items()]
-    m = len(edge_list)
-    y = int(n**(1+epsilon))
-    x = math.ceil(m/y)
+    if not edges:
+        return iter([])
 
-    np.random.shuffle(edge_list) # shuffle the list so it is random
+    vertices = set()
+    for u, v, _ in edges:
+        vertices.add(u)
+        vertices.add(v)
 
-    print(f"n={n} m={m} y={y} x={x}")
+    mst, _ = find_mst(vertices, vertices, edges)
 
-    # setup spark
-    conf = SparkConf().setAppName('MST_EDGE_SAMPLING')
-    conf = conf.setMaster("local[4]") # [number] is the amount of cores
-    sc = SparkContext.getOrCreate(conf=conf)
+    return iter([mst])
 
-    edges_rdd = sc.parallelize(edge_list, numSlices=x) # partition into x partitions
-
-    def local_mst(edges_iter):
-        edges = list(edges_iter)
-
-        if not edges:
-            return iter([])
-
-        vertices = set()
-        for u, v, _ in edges:
-            vertices.add(u)
-            vertices.add(v)
-
-        mst, removed = find_mst(vertices, vertices, edges)
-
-        return iter([(mst, removed)])
-
-    local_results = edges_rdd.mapPartitions(local_mst).collect()
-
-    mst = []
-    removed_edges = set()
-    for mst_sub, removed_sub in local_results:
-        mst.extend(mst_sub)
-        removed_edges.update(removed_sub)
-
-    return mst, removed_edges
-
-
-def remove_edges(E, removed_edges):
-    """
-    Removes the edges, which are removed when generating msts
-    :param E: current edges
-    :param removed_edges: edges to be removed
-    :return: return the updated edge dict
-    """
-    for edge in removed_edges:
-        if edge[1] in E[edge[0]]:
-            del E[edge[0]][edge[1]]
-    return E
-
-
-def create_mst(V, E, epsilon, size, vertex_coordinates, plot_intermediate=False, plotter=None):
+def create_mst(V:List[int], E:Dict[int, Dict[int, float]], epsilon:float, vertex_coordinates, sc:SparkContext, plot_intermediate=False, plotter=None):
     """
     Creates the mst of the graph G = (V, E).
     As long as the number of edges is greater than n ^(1 + epsilon), the number of edges is reduced
@@ -242,7 +200,6 @@ def create_mst(V, E, epsilon, size, vertex_coordinates, plot_intermediate=False,
     :param V: Vertices
     :param E: edges
     :param epsilon:
-    :param size: number of edges
     :param plot_intermediate: boolean to indicate if intermediate steps should be plotted
     :param vertex_coordinates: coordinates of vertices
     :return: returns the reduced graph with at most np.power(n, 1 + epsilon) edges
@@ -250,28 +207,51 @@ def create_mst(V, E, epsilon, size, vertex_coordinates, plot_intermediate=False,
     print("Creating MST")
     n = len(V)
     total_runs = 0
-    while size > np.power(n, 1 + epsilon):
+    edge_list = [(i, j, w) for i, edgeDict in E.items() for j, w in edgeDict.items()]
+    m = len(edge_list)
+    y = np.power(n, 1 + epsilon)
+    x = int(np.ceil(m / y))
+    np.random.shuffle(edge_list)
+
+    edges_rdd = sc.parallelize(edge_list, numSlices=x)
+    m = edges_rdd.count()
+    while True:
+        print(f"m={m} x={x} y={y}")
         total_runs += 1
+        local_results = edges_rdd.mapPartitions(local_mst)
+        edges_rdd = local_results.flatMap(lambda mst_edges: mst_edges)
+
+        n = edges_rdd.flatMap(lambda edge: [edge[0], edge[1]]).distinct().count()
+        m = edges_rdd.count() 
+        y = int(n**(1+epsilon))
+        x = math.ceil(m/y)
+
+        if m <= y:
+            break
+
+        edges_rdd = edges_rdd.coalesce(numPartitions=x,shuffle=True)
+
+        continue #skip plotting for now
         if plotter is not None:
             plotter.next_round()
-        mst, removed_edges = reduce_edges(V, E, epsilon)
+
         if plot_intermediate and plotter is not None:
             if len(vertex_coordinates[0]) > 2:
                 plotter.plot_mst_3d(mst, intermediate=True, plot_cluster=False, plot_num_machines=1)
             else:
                 plotter.plot_mst_2d(mst, intermediate=True, plot_cluster=False, plot_num_machines=1)
-        E = remove_edges(E, removed_edges)
-        print(f"Edges removed in run {total_runs}: {len(removed_edges)}")
-        size = size - len(removed_edges)
-    # Now the number of edges is reduced and can be moved to a single machine
-    V = set(range(n))
-    items = E.items()  # returns [(x, {y : 1})]
-    edges = []
-    for item in items:
-        items2 = item[1].items()
-        for item2 in items2:
-            edges.append((item[0], item2[0], item2[1]))
-    mst, removed_edges = find_mst(V, V, edges)
+
+
+    print(f"m={m} x={x} y={y}")
+
+    mst_vertices = set(edges_rdd
+                    .flatMap(lambda edge: [edge[0], edge[1]])
+                    .distinct()
+                    .collect())
+    mst_edges = edges_rdd.collect()
+
+    mst, _ = find_mst(mst_vertices, mst_vertices, mst_edges)
+
     print(f"Total runs: {total_runs}")
     return mst
 
@@ -286,11 +266,12 @@ def main():
     parser.add_argument('--machines', help='Number of machines [default=1]', type=int, default=1)
     args = parser.parse_args()
 
-    a = 2
-    n = 2000
-    epsilon = 1/4
+    a = 1
+    n = 200
+    epsilon = 1/8
     c = 1/2
     m = int(a * n**(1+c))
+    m = int(n * (n-1) / 2)
 
     print('Start generating MST')
     if args.test:
@@ -302,6 +283,10 @@ def main():
     datasets = get_clustering_data(n_samples=n)
     names_datasets = ['TwoCircles', 'TwoMoons', 'Varied', 'Aniso', 'Blobs', 'Random', 'swissroll', 'sshape']
     # datasets = []
+
+    conf = SparkConf().setAppName('MST_EDGE_SAMPLING')
+    conf = conf.setMaster("local[4]") # [number] is the amount of cores
+    sc = SparkContext.getOrCreate(conf=conf)
 
     num_clusters = [2, 2, 3, 3, 3, 2, 2, 2]
     cnt = 0
@@ -329,8 +314,8 @@ def main():
 
         V = list(range(len(vertex_coordinates)))
         timestamp = datetime.now()
-        mst = create_mst(V, E, epsilon=epsilon, size=m, vertex_coordinates=vertex_coordinates,
-                         plot_intermediate=True, plotter=plotter)
+        mst = create_mst(V, E, epsilon=epsilon, vertex_coordinates=vertex_coordinates,
+                         sc=sc, plot_intermediate=False, plotter=None)
         endtime = datetime.now()
         print('Found MST in: ', endtime - timestamp)
         time.append(datetime.now() - timestamp)
@@ -342,6 +327,7 @@ def main():
         cnt += 1
         print("=========")
 
+    sc.stop()
     return
 
 
