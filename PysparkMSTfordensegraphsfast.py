@@ -12,12 +12,11 @@ from Plotter import *
 from DataReader import *
 
 
-def get_clustering_data():
+def get_clustering_data(n_samples=10):
     """
     Retrieves all toy datasets from sklearn
     :return: circles, moons, blobs datasets.
     """
-    n_samples = 1500
     noisy_circles = make_circles(n_samples=n_samples, factor=.5,
                                  noise=0.05)
     noisy_moons = make_moons(n_samples=n_samples, noise=0.05)
@@ -192,10 +191,7 @@ def find_mst(U, V, E):
                 E.remove(E[0])
     for edge in E:
         remove_edges.add(edge)
-    if len(mst) != len(vertices) - 1 or len(connected_component) != len(vertices):
-        print('Warning: parition cannot have a full MST! Missing edges to create full MST.')
-        # print('Error: MST found cannot be correct \n Length mst: ', len(mst), '\n Total connected vertices: ',
-        #       len(connected_component), '\n Number of vertices: ', len(vertices))
+
     return mst, remove_edges
 
 
@@ -224,7 +220,7 @@ def get_edges(U, V, E):
     return U, V, edge_list
 
 
-def reduce_edges(vertices, E, c, epsilon):
+def reduce_edges(vertices, E, c, epsilon, sc):
     """
     Uses PySpark to distribute the computation of the MSTs,
     Randomly partition the vertices twice in k subsets (U = {u_1, u_2, .., u_k}, V = {v_1, v_2, .., v_k})
@@ -236,12 +232,8 @@ def reduce_edges(vertices, E, c, epsilon):
     :param epsilon:
     :return:The reduced number of edges
     """
-    conf = SparkConf().setAppName('MST_Algorithm')
-    sc = SparkContext.getOrCreate(conf=conf)
-
     n = len(vertices)
     k = math.ceil(n ** ((c - epsilon) / 2))
-    print("k: ", k)
     U, V = partion_vertices(vertices, k)
 
     rddUV = sc.parallelize(U).cartesian(sc.parallelize(V)).map(lambda x: get_edges(x[0], x[1], E)).map(
@@ -255,7 +247,6 @@ def reduce_edges(vertices, E, c, epsilon):
         for edge in both[i][1]:
             removed_edges.add(edge)
 
-    sc.stop()
     return mst, removed_edges
 
 
@@ -272,7 +263,7 @@ def remove_edges(E, removed_edges):
     return E
 
 
-def create_mst(V, E, epsilon, size, vertex_coordinates, plot_intermediate=False, plotter=None):
+def create_mst(V, E, epsilon, size, vertex_coordinates, sc, plot_intermediate=False, plotter=None):
     """
     Creates the mst of the graph G = (V, E).
     As long as the number of edges is greater than n ^(1 + epsilon), the number of edges is reduced
@@ -288,22 +279,19 @@ def create_mst(V, E, epsilon, size, vertex_coordinates, plot_intermediate=False,
     """
     n = len(V)
     c = math.log(size / n, n)
-    print("C", c)
     total_runs = 0
     while size > np.power(n, 1 + epsilon):
         total_runs += 1
         if plotter is not None:
             plotter.next_round()
-        mst, removed_edges = reduce_edges(V, E, c, epsilon)
+        mst, removed_edges = reduce_edges(V, E, c, epsilon, sc)
         if plot_intermediate and plotter is not None:
             if len(vertex_coordinates[0]) > 2:
                 plotter.plot_mst_3d(mst, intermediate=True, plot_cluster=False, plot_num_machines=1)
             else:
                 plotter.plot_mst_2d(mst, intermediate=True, plot_cluster=False, plot_num_machines=1)
         E = remove_edges(E, removed_edges)
-        print('Total edges removed in this iteration', len(removed_edges))
         size = size - len(removed_edges)
-        print('New total of edges: ', size)
         c = (c - epsilon) / 2
     # Now the number of edges is reduced and can be moved to a single machine
     V = set(range(n))
@@ -314,8 +302,28 @@ def create_mst(V, E, epsilon, size, vertex_coordinates, plot_intermediate=False,
         for item2 in items2:
             edges.append((item[0], item2[0], item2[1]))
     mst, removed_edges = find_mst(V, V, edges)
-    print("#####\n\nTotal runs: ", total_runs, "\n\n#####")
     return mst
+
+
+def sample_edges(E: dict[int, dict[int, float]], m: int, seed:int=1):
+    """
+    Sample at most m edges from an undirected edge dict E.
+    Preserves the E[i][j] with i < j structure.
+    """
+    rng = random.Random(seed)
+
+    edges = [(i, j, w) for i, nbrs in E.items() for j, w in nbrs.items()]
+
+    if m >= len(edges):
+        return E, len(edges)
+
+    sampled = rng.sample(edges, m)
+
+    E_new = {}
+    for i, j, w in sampled:
+        E_new.setdefault(i, {})[j] = w
+
+    return E_new, m
 
 
 def main():
@@ -335,95 +343,52 @@ def main():
     start_time = datetime.now()
     print('Starting time:', start_time)
 
-    datasets = get_clustering_data()
+    a = 3
+    n = 1000
+    epsilon = 1/8
+    c = 1/2
+    m = int(a * n**(1+c)) # semi-dense graph
+    #m = int(n * (n-1) / 2) # complete graph
+
+    datasets = get_clustering_data(n_samples=n)
     names_datasets = ['TwoCircles', 'TwoMoons', 'Varied', 'Aniso', 'Blobs', 'Random', 'swissroll', 'sshape']
-    # datasets = []
+
 
     num_clusters = [2, 2, 3, 3, 3, 2, 2, 2]
     cnt = 0
-    time = []
-    file_location = 'Results/test/'
+    file_location = 'new_results/'
     plotter = Plotter(None, None, file_location)
-    data_reader = DataReader()
+
+    conf = SparkConf().setAppName('MST_EDGE_SAMPLING')
+    conf = conf.setMaster("local[4]") # [number] is the amount of cores
+    sc = SparkContext.getOrCreate(conf=conf)
+
+    print(f"a={a} n={n} epsilon={epsilon} c={c} m={m}")
     for dataset in datasets:
         if cnt < 0:
             cnt += 1
             continue
         timestamp = datetime.now()
-        print('Start creating Distance Matrix...')
         E, size, vertex_coordinates = create_distance_matrix(dataset[0][0])
+        E, size = sample_edges(E=E, m=m, seed=1)
         plotter.set_vertex_coordinates(vertex_coordinates)
         plotter.set_dataset(names_datasets[cnt])
         plotter.update_string()
         plotter.reset_round()
         V = list(range(len(vertex_coordinates)))
-        print('Size dataset: ', len(vertex_coordinates))
-        print('Created distance matrix in: ', datetime.now() - timestamp)
-        print('Start creating MST...')
         timestamp = datetime.now()
-        mst = create_mst(V, E, epsilon=args.epsilon, size=size, vertex_coordinates=vertex_coordinates,
+        mst = create_mst(V, E, epsilon=epsilon, size=size, vertex_coordinates=vertex_coordinates, sc=sc,
                          plot_intermediate=True, plotter=plotter)
-        print('Found MST in: ', datetime.now() - timestamp)
-        time.append(datetime.now() - timestamp)
-        print('Start creating plot of MST...')
-        timestamp = datetime.now()
+        endtime = datetime.now()
+        print(f"{names_datasets[cnt]}: {endtime - timestamp}")
         if len(vertex_coordinates[0]) > 2:
             plotter.plot_mst_3d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
         else:
             plotter.plot_mst_2d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
-        print('Created plot of MST in: ', datetime.now() - timestamp)
         cnt += 1
 
-    # Read form file location
-    # loc_array = ['datasets/Brightkite_edges.txt', 'datasets/CA-AstroPh.txt', 'datasets/com-amazon.ungraph.txt',
-    # 'datasets/facebook_combined.txt'
-    # ]
-    # loc = 'datasets/Brightkite_edges.txt'
-    loc = 'datasets/CA-AstroPh.txt'
-    # loc = 'datasets/facebook_combined.txt'
-    # loc = 'datasets/polygons/rvisp24116.instance.json'
-    print('Read dataset: ', loc)
-    timestamp = datetime.now()
-    # V, size, E, vertex_coordinates = data_reader.read_json(loc)
-    V, size, E = data_reader.read_data_set_from_txtfile(loc)
-    print('Time to read dataset: ', datetime.now() - timestamp)
-    print('Size dataset: ', size)
-    timestamp = datetime.now()
-
-    mst = create_mst(V, E, epsilon=args.epsilon, size=size, vertex_coordinates=None, plot_intermediate=False)
-    c = [[121399]]
-
-    cnt = 0
-    dict_edges = dict()
-    for edge in mst:
-        if edge[0] in dict_edges:
-            dict_edges[edge[0]][edge[1]] = edge[2]
-        else:
-            dict_edges[edge[0]] = {edge[1]: edge[2]}
-
-    while len(c[0]) < 1000:
-        number = mst[cnt][0]
-        cnt += 1
-        c = create_clusters([[number]], dict_edges)
-        print(len(c[0]))
-
-    new_mst = []
-    for edge in mst:
-        if edge[0] in c[0]:
-            new_mst.append(edge)
-
-    plotter.plot_without_coordinates(new_mst)
-    # plotter.set_vertex_coordinates(vertex_coordinates)
-    # plotter.set_dataset('rvisp24116')
-    # plotter.update_string()
-    # plotter.plot_mst_2d(mst)
-
-    print(len(mst), len(V))
-    print('Found MST in: ', datetime.now() - timestamp)
-    print('Done...')
-    for t in time:
-        print('Dataset generation took:', t)
-
+    sc.stop()
+    return
 
 if __name__ == '__main__':
     # Initial call to main function
