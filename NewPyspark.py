@@ -263,8 +263,8 @@ def run(a, n, epsilon, c, sc):
     names_datasets = ['TwoCircles', 'TwoMoons', 'Varied', 'Aniso', 'Blobs', 'Random', 'swissroll', 'sshape']
 
     cnt = 0
-    file_location = 'new_results/'
-
+    # file_location = 'new_results/'
+    # plotter = Plotter(None, None, file_location)
     for dataset in datasets:
         if cnt < 0:
             cnt += 1
@@ -272,12 +272,21 @@ def run(a, n, epsilon, c, sc):
         edges, _, vertex_coordinates = create_distance_matrix(dataset[0][0])
         E, m = sample_edges(E=edges, m=m, seed=1)
         V = list(range(len(vertex_coordinates)))
+        # plotter.set_vertex_coordinates(vertex_coordinates)
+        # plotter.set_dataset(names_datasets[cnt])
+        # plotter.update_string()
+        # plotter.reset_round()
 
         t_start = time.perf_counter_ns()
         mst = create_mst(V, E, epsilon=epsilon, vertex_coordinates=vertex_coordinates,
                          sc=sc, plot_intermediate=False, plotter=None)
         t_end = time.perf_counter_ns()
         print(f"{names_datasets[cnt]},{a},{n},{epsilon},{c},{m},{t_end - t_start}")
+
+        # if len(vertex_coordinates[0]) > 2:
+        #     plotter.plot_mst_3d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
+        # else:
+        #     plotter.plot_mst_2d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
 
         cnt += 1
 
