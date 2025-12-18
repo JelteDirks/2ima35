@@ -380,7 +380,7 @@ def main():
         mst = create_mst(V, E, epsilon=epsilon, size=size, vertex_coordinates=vertex_coordinates, sc=sc,
                          plot_intermediate=True, plotter=plotter)
         endtime = datetime.now()
-        print(f"{names_datasets[cnt]}: {endtime - timestamp}")
+        print(f"{names_datasets[cnt]}={endtime - timestamp}")
         if len(vertex_coordinates[0]) > 2:
             plotter.plot_mst_3d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
         else:
