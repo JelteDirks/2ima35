@@ -204,7 +204,6 @@ def create_mst(V:List[int], E:Dict[int, Dict[int, float]], epsilon:float, vertex
     :param vertex_coordinates: coordinates of vertices
     :return: returns the reduced graph with at most np.power(n, 1 + epsilon) edges
     """
-    print("Creating MST")
     n = len(V)
     total_runs = 0
     edge_list = [(i, j, w) for i, edgeDict in E.items() for j, w in edgeDict.items()]
@@ -212,7 +211,6 @@ def create_mst(V:List[int], E:Dict[int, Dict[int, float]], epsilon:float, vertex
     y = np.power(n, 1 + epsilon)
     x = int(np.ceil(m / y))
     np.random.shuffle(edge_list)
-    print(f"m={m} x={x} y={y}")
 
     edges_rdd = sc.parallelize(edge_list, numSlices=x)
     m = edges_rdd.count()
@@ -225,7 +223,6 @@ def create_mst(V:List[int], E:Dict[int, Dict[int, float]], epsilon:float, vertex
         m = edges_rdd.count() 
         y = int(n**(1+epsilon))
         x = math.ceil(m/y)
-        print(f"m={m} x={x} y={y}")
 
         if m <= y:
             break
@@ -249,8 +246,6 @@ def create_mst(V:List[int], E:Dict[int, Dict[int, float]], epsilon:float, vertex
     mst_edges = edges_rdd.collect()
 
     mst, _ = find_mst(mst_vertices, mst_vertices, mst_edges)
-
-    print(f"Total runs: {total_runs}")
     return mst
 
 
@@ -288,40 +283,31 @@ def main():
 
     num_clusters = [2, 2, 3, 3, 3, 2, 2, 2]
     cnt = 0
-    time = []
-    #file_location = 'Results/test/'
     file_location = 'new_results/'
     plotter = Plotter(None, None, file_location)
-    data_reader = DataReader()
     for dataset in datasets:
         if cnt < 0:
             cnt += 1
             continue
-        print("=========")
         timestamp = datetime.now()
-        edges, size, vertex_coordinates = create_distance_matrix(dataset[0][0])
+        edges, _, vertex_coordinates = create_distance_matrix(dataset[0][0])
         E, m = sample_edges(E=edges, m=m, seed=1)
-        print(f"Reduced |E|={size} to m={m} edges")
-
         plotter.set_vertex_coordinates(vertex_coordinates)
         plotter.set_dataset(names_datasets[cnt])
         plotter.update_string()
         plotter.reset_round()
-
         V = list(range(len(vertex_coordinates)))
         timestamp = datetime.now()
         mst = create_mst(V, E, epsilon=epsilon, vertex_coordinates=vertex_coordinates,
                          sc=sc, plot_intermediate=False, plotter=None)
         endtime = datetime.now()
-        print('Found MST in: ', endtime - timestamp)
-        time.append(datetime.now() - timestamp)
+        print(f"{names_datasets[cnt]}={endtime - timestamp}")
         timestamp = datetime.now()
         if len(vertex_coordinates[0]) > 2:
             plotter.plot_mst_3d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
         else:
             plotter.plot_mst_2d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
         cnt += 1
-        print("=========")
 
     sc.stop()
     return
