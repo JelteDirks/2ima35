@@ -1,10 +1,13 @@
 import math
+import time
 import csv
 import random
 from typing import Dict, List
 import pyspark
 import scipy.spatial
 import sys
+
+from itertools import product
 
 from util import describe_type, sample_edges
 
@@ -249,65 +252,53 @@ def create_mst(V:List[int], E:Dict[int, Dict[int, float]], epsilon:float, vertex
     return mst
 
 
+def run(a, n, epsilon, c, sc):
+    """
+    For every dataset, it creates the mst and plots the clustering
+    """
+    m = int(a * n**(1+c)) # semi-dense graph
+    #m = int(n * (n-1) / 2) # complete graph
+
+    datasets = get_clustering_data(n_samples=n)
+    names_datasets = ['TwoCircles', 'TwoMoons', 'Varied', 'Aniso', 'Blobs', 'Random', 'swissroll', 'sshape']
+
+    cnt = 0
+    file_location = 'new_results/'
+
+    for dataset in datasets:
+        if cnt < 0:
+            cnt += 1
+            continue
+        edges, _, vertex_coordinates = create_distance_matrix(dataset[0][0])
+        E, m = sample_edges(E=edges, m=m, seed=1)
+        V = list(range(len(vertex_coordinates)))
+
+        t_start = time.perf_counter_ns()
+        mst = create_mst(V, E, epsilon=epsilon, vertex_coordinates=vertex_coordinates,
+                         sc=sc, plot_intermediate=False, plotter=None)
+        t_end = time.perf_counter_ns()
+        print(f"{names_datasets[cnt]},{a},{n},{epsilon},{c},{m},{t_end - t_start}")
+
+        cnt += 1
+
+    return
+
+
 def main():
     """
     For every dataset, it creates the mst and plots the clustering
     """
-    parser = ArgumentParser()
-    parser.add_argument('--test', help='Used for smaller dataset and testing', action='store_true')
-    parser.add_argument('--epsilon', help='epsilon [default=1/8]', type=float, default=1 / 8)
-    parser.add_argument('--machines', help='Number of machines [default=1]', type=int, default=1)
-    args = parser.parse_args()
-
-    a = 3
-    n = 200
-    epsilon = 1/8
-    c = 1/2
-    m = int(a * n**(1+c)) # semi-dense graph
-    #m = int(n * (n-1) / 2) # complete graph
-
-    print('Start generating MST')
-    if args.test:
-        print('Test argument given')
-
-    start_time = datetime.now()
-    print('Starting time:', start_time)
-
-    datasets = get_clustering_data(n_samples=n)
-    names_datasets = ['TwoCircles', 'TwoMoons', 'Varied', 'Aniso', 'Blobs', 'Random', 'swissroll', 'sshape']
-    # datasets = []
+    A_VALUES = [3]
+    C_VALUES = [0.5]
+    EPS_VALUES = [0.125]
+    N_VALUES = [100, 200]
 
     conf = SparkConf().setAppName('MST_EDGE_SAMPLING')
     conf = conf.setMaster("local[4]") # [number] is the amount of cores
     sc = SparkContext.getOrCreate(conf=conf)
 
-    num_clusters = [2, 2, 3, 3, 3, 2, 2, 2]
-    cnt = 0
-    file_location = 'new_results/'
-    plotter = Plotter(None, None, file_location)
-    for dataset in datasets:
-        if cnt < 0:
-            cnt += 1
-            continue
-        timestamp = datetime.now()
-        edges, _, vertex_coordinates = create_distance_matrix(dataset[0][0])
-        E, m = sample_edges(E=edges, m=m, seed=1)
-        plotter.set_vertex_coordinates(vertex_coordinates)
-        plotter.set_dataset(names_datasets[cnt])
-        plotter.update_string()
-        plotter.reset_round()
-        V = list(range(len(vertex_coordinates)))
-        timestamp = datetime.now()
-        mst = create_mst(V, E, epsilon=epsilon, vertex_coordinates=vertex_coordinates,
-                         sc=sc, plot_intermediate=False, plotter=None)
-        endtime = datetime.now()
-        print(f"{names_datasets[cnt]}={endtime - timestamp}")
-        timestamp = datetime.now()
-        if len(vertex_coordinates[0]) > 2:
-            plotter.plot_mst_3d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
-        else:
-            plotter.plot_mst_2d(mst, intermediate=False, plot_cluster=False, num_clusters=num_clusters[cnt])
-        cnt += 1
+    for (a, c, epsilon, n) in product(A_VALUES, C_VALUES, EPS_VALUES, N_VALUES):
+        run(a, n, epsilon, c, sc)
 
     sc.stop()
     return
