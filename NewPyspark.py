@@ -264,12 +264,12 @@ def main():
     parser.add_argument('--machines', help='Number of machines [default=1]', type=int, default=1)
     args = parser.parse_args()
 
-    a = 1
+    a = 3
     n = 200
     epsilon = 1/8
     c = 1/2
     m = int(a * n**(1+c)) # semi-dense graph
-    m = int(n * (n-1) / 2) # complete graph
+    #m = int(n * (n-1) / 2) # complete graph
 
     print('Start generating MST')
     if args.test:
@@ -294,9 +294,7 @@ def main():
     plotter = Plotter(None, None, file_location)
     data_reader = DataReader()
     for dataset in datasets:
-        if cnt >= 3:
-            break
-        if cnt <= 0:
+        if cnt < 0:
             cnt += 1
             continue
         print("=========")
